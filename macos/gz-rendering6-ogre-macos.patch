@@ -1,0 +1,182 @@
+diff --git a/ogre/src/OgreGpuRays.cc b/ogre/src/OgreGpuRays.cc
+index eb07d3d..30d7cfd 100644
+--- a/ogre/src/OgreGpuRays.cc
++++ b/ogre/src/OgreGpuRays.cc
+@@ -15,6 +15,10 @@
+  *
+ */
+ 
++#include <algorithm>
++#include <cmath>
++#include <vector>
++
+ #include <gz/common/Mesh.hh>
+ #include <gz/common/MeshManager.hh>
+ #include <gz/common/SubMesh.hh>
+@@ -104,6 +108,14 @@ class gz::rendering::OgreGpuRaysPrivate
+   /// rendering pass.
+   public: std::vector<int> texIdx;
+ 
++  /// \brief For every output ray (row-major, like the second pass image): the
++  /// first-pass texture index and the u, v texture coordinates to sample. Used to
++  /// stitch the scan on the CPU on macOS, where the second pass draws nothing.
++  public: std::vector<float> rayMap;
++
++  /// \brief CPU copy of the first-pass textures (RGBA), for the stitching above.
++  public: std::vector<float> firstPassData;
++
+   /// Number of second pass texture units created.
+   public: unsigned int texCount = 0;
+ 
+@@ -416,9 +428,9 @@ void OgreGpuRays::CreateGpuRaysTextures()
+       texName.str(), "General", Ogre::TEX_TYPE_2D,
+       this->dataPtr->w1st, this->dataPtr->h1st, 0,
+ #if OGRE_VERSION_LT_1_11_0
+-      Ogre::PF_FLOAT32_RGB, Ogre::TU_RENDERTARGET).getPointer();
++      Ogre::PF_FLOAT32_RGBA, Ogre::TU_RENDERTARGET).getPointer();
+ #else
+-      Ogre::PF_FLOAT32_RGB, Ogre::TU_RENDERTARGET).get();
++      Ogre::PF_FLOAT32_RGBA, Ogre::TU_RENDERTARGET).get();
+ #endif
+ 
+     Ogre::RenderTarget *rt =
+@@ -614,6 +626,7 @@ void OgreGpuRays::Render()
+ 
+   sceneMgr->removeRenderObjectListener(this);
+ 
++#ifndef __APPLE__
+   this->dataPtr->visual->SetVisible(true);
+ 
+   this->UpdateRenderTarget(
+@@ -622,6 +635,7 @@ void OgreGpuRays::Render()
+       this->dataPtr->orthoCam, true);
+ 
+   this->dataPtr->visual->SetVisible(false);
++#endif
+ 
+   sceneMgr->_suppressRenderStateChanges(false);
+ }
+@@ -658,11 +672,52 @@ void OgreGpuRays::PostRender()
+     this->dataPtr->gpuRaysBuffer = new float[len];
+   }
+ 
++#ifdef __APPLE__
++  // macOS (Apple OpenGL on Metal): the second pass, which draws one point per ray
++  // to stitch the first-pass textures together, rasterizes nothing, so every range
++  // came back as 0 (then range_min). Do the same stitching on the CPU: read the
++  // first-pass textures and sample each ray's texel (see CreateMesh for the mapping).
++  {
++    const unsigned int w1 = this->dataPtr->w1st;
++    const unsigned int h1 = this->dataPtr->h1st;
++    const size_t texFloats = static_cast<size_t>(w1) * h1 * 4;
++    this->dataPtr->firstPassData.resize(texFloats * this->dataPtr->textureCount);
++    for (unsigned int t = 0; t < this->dataPtr->textureCount; ++t)
++    {
++      Ogre::PixelBox box(w1, h1, 1, Ogre::PF_FLOAT32_RGBA,
++          this->dataPtr->firstPassData.data() + t * texFloats);
++      this->dataPtr->firstPassTextures[t]->getBuffer()->blitToMemory(box);
++    }
++    const size_t rays = std::min(static_cast<size_t>(width) * height,
++        this->dataPtr->rayMap.size() / 3);
++    for (size_t k = 0; k < rays; ++k)
++    {
++      const unsigned int t = static_cast<unsigned int>(this->dataPtr->rayMap[3 * k]);
++      const float u = this->dataPtr->rayMap[3 * k + 1];
++      const float v = this->dataPtr->rayMap[3 * k + 2];
++      float *dst = this->dataPtr->gpuRaysBuffer + 3 * k;
++      if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f ||
++          t >= this->dataPtr->textureCount)
++      {
++        dst[0] = dst[1] = dst[2] = 1.0f;  // same as gpu_rays_2nd_pass_fs.glsl
++        continue;
++      }
++      const unsigned int px = std::min(static_cast<unsigned int>(u * w1), w1 - 1);
++      const unsigned int py = std::min(static_cast<unsigned int>(v * h1), h1 - 1);
++      const float *src = this->dataPtr->firstPassData.data() + t * texFloats +
++          (static_cast<size_t>(py) * w1 + px) * 4;
++      dst[0] = src[0];
++      dst[1] = src[1];
++      dst[2] = 0.0f;
++    }
++  }
++#else
+   Ogre::PixelBox dstBox(width, height,
+         1, Ogre::PF_FLOAT32_RGB, this->dataPtr->gpuRaysBuffer);
+ 
+   auto pixelBuffer = this->dataPtr->secondPassTexture->getBuffer();
+   pixelBuffer->blitToMemory(dstBox);
++#endif
+ 
+   if (!this->dataPtr->gpuRaysScan)
+   {
+@@ -820,7 +875,8 @@ void OgreGpuRays::CreateMesh()
+ 
+   // total gpu rays hfov
+   double thfov = this->dataPtr->textureCount * this->CosHorzFOV();
+-  double hstep = thfov / (this->dataPtr->w2nd - 1);
++  // A single-ray sensor (e.g. a cliff sensor) has no step: its ray is the centre one.
++  double hstep = this->dataPtr->w2nd > 1 ? thfov / (this->dataPtr->w2nd - 1) : 0.0;
+   double vstep = 2.0 * phi / (this->dataPtr->h2nd - 1);
+ 
+   if (this->dataPtr->h2nd == 1)
+@@ -840,7 +896,7 @@ void OgreGpuRays::CreateMesh()
+     for (unsigned int i = 0; i < this->dataPtr->w2nd; ++i)
+     {
+       // current horizontal angle from start of gpu rays scan
+-      double delta = hstep * i;
++      double delta = this->dataPtr->w2nd > 1 ? hstep * i : thfov / 2.0;
+ 
+       // index of texture that contains the depth value
+       unsigned int texture = static_cast<unsigned int>(
+@@ -880,6 +936,11 @@ void OgreGpuRays::CreateMesh()
+ 
+       submesh->AddTexCoord(u, v);
+       submesh->AddIndex(this->dataPtr->w2nd * j + i);
++
++      // With a single row the vertical term above is 0/0: use the texture centre.
++      this->dataPtr->rayMap.push_back(static_cast<float>(texture));
++      this->dataPtr->rayMap.push_back(static_cast<float>(std::isfinite(u) ? u : 0.5));
++      this->dataPtr->rayMap.push_back(static_cast<float>(std::isfinite(v) ? v : 0.5));
+     }
+   }
+ 
+diff --git a/ogre/src/OgreMaterial.cc b/ogre/src/OgreMaterial.cc
+index 8a05aea..d1b9cb2 100644
+--- a/ogre/src/OgreMaterial.cc
++++ b/ogre/src/OgreMaterial.cc
+@@ -437,10 +437,14 @@ void OgreMaterial::SetVertexShader(const std::string &_path)
+   Ogre::ResourceGroupManager::getSingleton().addResourceLocation(_path,
+   "FileSystem", "General", false);
+ 
++  // Several sensors may use the same shader file (e.g. two depth cameras): reuse the
++  // program instead of creating a duplicate, which throws ItemIdentityException.
+   Ogre::HighLevelGpuProgramPtr vertexShader =
+-    Ogre::HighLevelGpuProgramManager::getSingletonPtr()->createProgram(
+-        "__ignition_rendering_vertex__" + _path,
+-        this->ogreGroup,
++      Ogre::HighLevelGpuProgramManager::getSingleton().getByName(
++          "__ignition_rendering_vertex__" + _path, this->ogreGroup);
++  if (!vertexShader.get())
++    vertexShader = Ogre::HighLevelGpuProgramManager::getSingleton().createProgram(
++        "__ignition_rendering_vertex__" + _path, this->ogreGroup,
+         "glsl", Ogre::GpuProgramType::GPT_VERTEX_PROGRAM);
+ 
+   vertexShader->setSourceFile(_path);
+@@ -486,10 +490,14 @@ void OgreMaterial::SetFragmentShader(const std::string &_path)
+   Ogre::ResourceGroupManager::getSingleton().addResourceLocation(_path,
+   "FileSystem", "General", false);
+ 
++  // Several sensors may use the same shader file (e.g. two depth cameras): reuse the
++  // program instead of creating a duplicate, which throws ItemIdentityException.
+   Ogre::HighLevelGpuProgramPtr fragmentShader =
+-    Ogre::HighLevelGpuProgramManager::getSingleton().createProgram(
+-        "__ignition_rendering_fragment__" + _path,
+-        this->ogreGroup,
++      Ogre::HighLevelGpuProgramManager::getSingleton().getByName(
++          "__ignition_rendering_fragment__" + _path, this->ogreGroup);
++  if (!fragmentShader.get())
++    fragmentShader = Ogre::HighLevelGpuProgramManager::getSingleton().createProgram(
++        "__ignition_rendering_fragment__" + _path, this->ogreGroup,
+         "glsl", Ogre::GpuProgramType::GPT_FRAGMENT_PROGRAM);
+ 
+   fragmentShader->setSourceFile(_path);
