@@ -16,8 +16,9 @@ map.yaml --> map_server + AMCL (map->odom) --> Nav2 (planner, controller, behavi
 - `config/` — `slam.yaml`, `localization.yaml` (AMCL), `nav2.yaml`.
 - `maps/map.yaml`, `maps/map.pgm` — the maze map built with SLAM Toolbox.
 - `rviz/turtlebot4.rviz` — map, scan, robot, costmaps, paths, AMCL particles, Nav2 Goal.
-- `scripts/` — `check_topics.py` (/scan, /odom, /cmd_vel), `compare_pose.py` (localized vs
-  Gazebo pose), `send_goals.py` (Nav2 goals from the command line), `stop_sim.sh`.
+- `scripts/` — `demo.sh` (all four parts in one run), `check_topics.py` (/scan, /odom, /cmd_vel),
+  `explore_route.py` (drives the robot for mapping), `compare_pose.py` (localized vs Gazebo pose),
+  `send_goals.py` / `watch_goals.py` (Nav2 goals from the command line / from RViz), `stop_sim.sh`.
 - `macos/` — patch + build script for Gazebo's ogre renderer on macOS (see below).
 
 ## Build
@@ -49,6 +50,10 @@ ros2 run nav2_map_server map_saver_cli -f ~/tb4_ws/src/turtlebot4_bai04/maps/map
 # Phần 3 + 4 – AMCL on the saved map, then Nav2 goals with "Nav2 Goal" in RViz
 ros2 launch turtlebot4_bai04 sim.launch.py localization:=true nav2:=true
 ros2 run turtlebot4_bai04 compare_pose.py
+
+# All four parts in one command: map saved to ~/tb4_demo; --teleop drives with the keyboard,
+# --rviz-goals waits for three "Nav2 Goal" clicks in RViz
+ros2 run turtlebot4_bai04 demo.sh
 ```
 
 ## Results

@@ -6,7 +6,8 @@ for p in "ros2 launch turtlebot4_bai04" "ign gazebo" ros_gz_bridge/parameter_bri
          irobot_create_nodes irobot_create_ignition_toolbox robot_state_publisher joint_state_publisher \
          static_transform_publisher controller_manager/spawner slam_toolbox /amcl /map_server \
          controller_server planner_server behavior_server bt_navigator waypoint_follower \
-         velocity_smoother smoother_server lifecycle_manager rviz2; do
+         velocity_smoother smoother_server lifecycle_manager rviz2 \
+         explore_route.py send_goals.py watch_goals.py compare_pose.py check_topics.py; do
   pkill -9 -f "$p" 2>/dev/null
 done
 echo "stopped"
