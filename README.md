@@ -4,6 +4,8 @@ TurtleBot 4 Lite in Ignition Gazebo (Fortress), ROS 2 Humble: map the `maze` wor
 SLAM Toolbox, save the map, localize on it with AMCL, then navigate autonomously with Nav2.
 Runs headless on macOS (RoboStack); RViz2 is the viewer.
 
+**Video demo:** https://drive.google.com/file/d/1FOBXRF59qovkcJb_21xw-_dbLqq39YfU/view?usp=sharing
+
 ```
 Gazebo (TurtleBot 4: RPLIDAR, Create 3 base) --/scan /odom /tf--> SLAM Toolbox --/map--> map.yaml + map.pgm
 map.yaml --> map_server + AMCL (map->odom) --> Nav2 (planner, controller, behaviors) --/cmd_vel--> robot
