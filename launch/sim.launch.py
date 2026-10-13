@@ -33,7 +33,7 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 ROBOT_NAME = "turtlebot4"
@@ -226,9 +226,13 @@ def generate_launch_description():
         ]),
     ])
 
+    # Without SLAM or AMCL there is no map frame yet (Phần 1): view in odom instead.
+    fixed_frame = PythonExpression([
+        "'map' if 'true' in ('", LaunchConfiguration("slam"), "', '",
+        LaunchConfiguration("localization"), "') else 'odom'"])
     rviz = Node(
         package="rviz2", executable="rviz2", name="rviz2", output="log",
-        arguments=["-d", LaunchConfiguration("rviz_config")],
+        arguments=["-d", LaunchConfiguration("rviz_config"), "-f", fixed_frame],
         parameters=[{"use_sim_time": True}],
         condition=IfCondition(LaunchConfiguration("rviz")),
     )
